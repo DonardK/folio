@@ -1,0 +1,17 @@
+{
+  "name": "Folio",
+  "short_name": "Folio",
+  "description": "Read your own PDFs, one page or two.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#100f0d",
+  "theme_color": "#100f0d",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
