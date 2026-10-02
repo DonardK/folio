@@ -1,6 +1,6 @@
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
-const MAX_IMAGE_BYTES = 128 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 256 * 1024 * 1024;
 
 let workerConfigured = false;
 
@@ -13,6 +13,19 @@ async function loadPdfjs() {
   return pdfjs;
 }
 
+function documentOptions(pdfjs: Awaited<ReturnType<typeof loadPdfjs>>) {
+  return {
+    verbosity: pdfjs.VerbosityLevel.ERRORS,
+    maxImageSize: -1,
+    canvasMaxAreaInBytes: MAX_IMAGE_BYTES,
+    cMapUrl: "/pdfjs/cmaps/",
+    cMapPacked: true,
+    standardFontDataUrl: "/pdfjs/standard_fonts/",
+    wasmUrl: "/pdfjs/wasm/",
+    useWasm: true,
+  };
+}
+
 export function warmPdf(): void {
   void loadPdfjs();
 }
@@ -21,24 +34,18 @@ export async function openPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
   const pdfjs = await loadPdfjs();
   const task = pdfjs.getDocument({
     data,
-    verbosity: pdfjs.VerbosityLevel.ERRORS,
-    maxImageSize: -1,
-    canvasMaxAreaInBytes: MAX_IMAGE_BYTES,
+    ...documentOptions(pdfjs),
   });
   return task.promise;
 }
 
 export async function openPdfUrl(url: string): Promise<PDFDocumentProxy> {
-  const pdfjs = await loadPdfjs();
-  const task = pdfjs.getDocument({
-    url,
-    verbosity: pdfjs.VerbosityLevel.ERRORS,
-    maxImageSize: -1,
-    canvasMaxAreaInBytes: MAX_IMAGE_BYTES,
-    rangeChunkSize: 1024 * 1024,
-    disableAutoFetch: true,
-  });
-  return task.promise;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("The book file could not be loaded.");
+  }
+  const data = new Uint8Array(await response.arrayBuffer());
+  return openPdf(data);
 }
 
 export async function renderCover(doc: PDFDocumentProxy): Promise<string> {
