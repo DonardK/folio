@@ -5,14 +5,14 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import PageCanvas from "@/components/page-canvas";
+import type { BookRecord } from "@/lib/book";
 import {
-  getBook,
-  getBookFile,
-  listBooks,
-  saveProgress,
-  type BookMeta,
-} from "@/lib/books";
-import { openPdf, pdfErrorMessage, warmPdf } from "@/lib/pdf";
+  fetchBook,
+  fetchBooks,
+  fetchBookUrl,
+  saveReadingProgress,
+} from "@/lib/library-client";
+import { openPdfUrl, pdfErrorMessage, warmPdf } from "@/lib/pdf";
 import {
   consumeOpenAt,
   hasSeenHint,
@@ -35,9 +35,9 @@ type LoadState =
   | { status: "error"; message: string }
   | {
       status: "ready";
-      book: BookMeta;
+      book: BookRecord;
       doc: PDFDocumentProxy;
-      library: BookMeta[];
+      library: BookRecord[];
     };
 
 type StageSize = { width: number; height: number };
@@ -77,37 +77,27 @@ export default function Reader({ bookId }: { bookId: string }) {
 
     (async () => {
       try {
-        const book = await getBook(bookId);
+        const book = await fetchBook(bookId);
         if (cancelled) return;
         if (!book) {
           setLoad({
             status: "error",
-            message: "That book is not on this device.",
+            message: "That book is not on the shelf.",
           });
           return;
         }
         setLoad({ status: "loading", title: book.title });
         document.title = `${book.title} · Folio`;
 
-        const file = await getBookFile(bookId);
+        const url = await fetchBookUrl(bookId);
         if (cancelled) return;
-        if (!file) {
-          setLoad({
-            status: "error",
-            message: "The file for this book is missing. Add it again from the shelf.",
-          });
-          return;
-        }
-
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        if (cancelled) return;
-        const doc = await openPdf(bytes);
+        const doc = await openPdfUrl(url);
         if (cancelled) {
           await doc.loadingTask.destroy();
           return;
         }
         active = doc;
-        const library = await listBooks();
+        const library = await fetchBooks();
         if (cancelled) return;
 
         const requested = consumeOpenAt();
@@ -115,7 +105,6 @@ export default function Reader({ bookId }: { bookId: string }) {
         const page = Math.min(doc.numPages, Math.max(1, Math.trunc(initial)));
         setAnchor(page);
         setLoad({ status: "ready", book, doc, library });
-        void saveProgress(bookId, page);
       } catch (error) {
         if (cancelled) return;
         setLoad({ status: "error", message: pdfErrorMessage(error) });
@@ -128,6 +117,37 @@ export default function Reader({ bookId }: { bookId: string }) {
       document.title = "Folio";
     };
   }, [bookId]);
+
+  const progressRef = useRef({ id: bookId, page: 1, ready: false });
+
+  useEffect(() => {
+    progressRef.current = { id: bookId, page: anchor, ready: load.status === "ready" };
+  }, [anchor, bookId, load.status]);
+
+  useEffect(() => {
+    if (load.status !== "ready") return;
+    const timer = window.setTimeout(() => {
+      void saveReadingProgress(bookId, anchor);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [anchor, bookId, load.status]);
+
+  useEffect(() => {
+    function flush() {
+      const current = progressRef.current;
+      if (!current.ready) return;
+      void saveReadingProgress(current.id, current.page, true);
+    }
+    function onHide() {
+      if (document.visibilityState === "hidden") flush();
+    }
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
 
   useEffect(() => {
     const element = stageRef.current;
@@ -182,7 +202,6 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (upcoming != null) {
       setAnchor(upcoming);
       setScrub(null);
-      void saveProgress(ready.book.id, upcoming);
       dismissHint();
       return;
     }
@@ -198,7 +217,6 @@ export default function Reader({ bookId }: { bookId: string }) {
     if (upcoming != null) {
       setAnchor(upcoming);
       setScrub(null);
-      void saveProgress(ready.book.id, upcoming);
       dismissHint();
       return;
     }
@@ -246,7 +264,6 @@ export default function Reader({ bookId }: { bookId: string }) {
     const page = pagesForAnchor(value, ready.doc.numPages, viewMode)[0] ?? value;
     setScrub(null);
     setAnchor(page);
-    void saveProgress(ready.book.id, page);
     dismissHint();
   }
 

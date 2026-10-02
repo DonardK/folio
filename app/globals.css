@@ -124,6 +124,31 @@ button {
   opacity: 0.5;
 }
 
+.login {
+  max-width: 32rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.login-field {
+  width: min(100%, 22rem);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.login-field input {
+  min-height: 48px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #181714;
+  color: var(--foreground);
+  padding: 0 14px;
+}
+
 .storage-note,
 .book-meta,
 .empty-note {

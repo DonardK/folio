@@ -1,54 +1,59 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
-  askToKeepStorage,
-  deleteBook,
-  listBooks,
-  saveBook,
-  storageEstimate,
+  createBook,
+  fetchBooks,
+  removeBook,
   titleFromFileName,
-  type BookMeta,
-} from "@/lib/books";
+  uploadBookFile,
+} from "@/lib/library-client";
+import type { BookRecord } from "@/lib/book";
 import { openPdf, pdfErrorMessage, renderCover, warmPdf } from "@/lib/pdf";
 
 type Notice = { tone: "ok" | "warn"; text: string };
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
 export default function Shelf() {
+  const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
-  const [books, setBooks] = useState<BookMeta[]>([]);
+  const [books, setBooks] = useState<BookRecord[]>([]);
   const [ready, setReady] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [pending, setPending] = useState<{ done: number; total: number; name: string } | null>(
-    null,
-  );
+  const [pending, setPending] = useState<{
+    done: number;
+    total: number;
+    name: string;
+    percent: number;
+  } | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
-  const [storage, setStorage] = useState<{ usage: number; quota: number } | null>(null);
 
   async function refresh() {
-    const [nextBooks, estimate] = await Promise.all([listBooks(), storageEstimate()]);
+    const nextBooks = await fetchBooks();
     setBooks(nextBooks);
-    setStorage(estimate);
     setReady(true);
   }
 
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const [nextBooks, estimate] = await Promise.all([listBooks(), storageEstimate()]);
-      if (cancelled) return;
-      setBooks(nextBooks);
-      setStorage(estimate);
-      setReady(true);
+      try {
+        const nextBooks = await fetchBooks();
+        if (cancelled) return;
+        setBooks(nextBooks);
+      } catch (error) {
+        if (!cancelled) {
+          setNotice({
+            tone: "warn",
+            text: error instanceof Error ? error.message : "The shelf could not be opened.",
+          });
+        }
+      } finally {
+        if (!cancelled) setReady(true);
+      }
     })();
     return () => {
       cancelled = true;
@@ -77,13 +82,12 @@ export default function Shelf() {
 
     const existing = new Set(books.map((book) => `${book.fileName}:${book.size}`));
     let added = 0;
-    let visits = 0;
     const problems: string[] = [];
 
     setNotice(null);
     for (let index = 0; index < pdfs.length; index += 1) {
       const file = pdfs[index];
-      setPending({ done: index, total: pdfs.length, name: file.name });
+      setPending({ done: index, total: pdfs.length, name: file.name, percent: 0 });
       const key = `${file.name}:${file.size}`;
       if (existing.has(key)) {
         problems.push(`${titleFromFileName(file.name)} is already on the shelf.`);
@@ -97,22 +101,19 @@ export default function Shelf() {
           if (pageCount < 1) throw new Error("This PDF has no pages.");
           const coverUrl = await renderCover(doc);
           const id = crypto.randomUUID();
-          const meta: BookMeta = {
+          await uploadBookFile(id, file, (percent) => {
+            setPending({ done: index, total: pdfs.length, name: file.name, percent });
+          });
+          await createBook({
             id,
             title: titleFromFileName(file.name),
             fileName: file.name,
             size: file.size,
-            addedAt: Date.now(),
-            lastOpenedAt: 0,
             pageCount,
-            lastPage: 1,
             coverUrl,
-            storage: "device",
-          };
-          const kind = await saveBook(meta, file);
+          });
           existing.add(key);
           added += 1;
-          if (kind === "visit") visits += 1;
         } finally {
           await doc.loadingTask.destroy();
         }
@@ -122,34 +123,38 @@ export default function Shelf() {
     }
 
     setPending(null);
-    await askToKeepStorage();
     await refresh();
 
     const parts: string[] = [];
     if (added > 0) {
       parts.push(added === 1 ? "Added 1 book." : `Added ${added} books.`);
     }
-    if (visits > 0) {
+    if (skipped > 0) {
       parts.push(
-        visits === 1
-          ? "1 book was too large to keep on this device. It stays open until you leave or refresh."
-          : `${visits} books were too large to keep. They stay open until you leave or refresh.`,
+        `Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ${skipped === 1 ? "was" : "were"} not a PDF.`,
       );
     }
-    if (skipped > 0) parts.push(`Skipped ${skipped} file${skipped === 1 ? "" : "s"} that ${skipped === 1 ? "was" : "were"} not a PDF.`);
     parts.push(...problems);
     if (parts.length > 0) {
-      setNotice({ tone: visits > 0 || problems.length > 0 || skipped > 0 ? "warn" : "ok", text: parts.join(" ") });
+      setNotice({
+        tone: problems.length > 0 || skipped > 0 ? "warn" : "ok",
+        text: parts.join(" "),
+      });
     }
   }
 
   async function remove(id: string) {
-    await deleteBook(id);
+    await removeBook(id);
     setConfirmId(null);
     await refresh();
   }
 
-  const continueBook = books.reduce<BookMeta | null>((latest, book) => {
+  async function signOut() {
+    await fetch("/api/logout", { method: "POST" });
+    router.refresh();
+  }
+
+  const continueBook = books.reduce<BookRecord | null>((latest, book) => {
     if (book.lastOpenedAt <= 0) return latest;
     if (!latest || book.lastOpenedAt > latest.lastOpenedAt) return book;
     return latest;
@@ -184,7 +189,7 @@ export default function Shelf() {
           <p className="eyebrow">Folio</p>
           <h1>Your shelf</h1>
           <p className="lede">
-            Books stay in this browser. They are not uploaded. Add them on your phone to read them there.
+            Books are saved on this site. Open this link anywhere, sign in, and continue where you left off.
             Order follows the file name, so volume 2 stays before volume 10.
           </p>
         </div>
@@ -209,17 +214,16 @@ export default function Shelf() {
               event.currentTarget.value = "";
             }}
           />
-          {storage ? (
-            <p className="storage-note">
-              {formatBytes(storage.usage)} used on this device
-            </p>
-          ) : null}
+          <button type="button" className="remove" onClick={() => void signOut()}>
+            Sign out
+          </button>
         </div>
       </header>
 
       {pending ? (
         <p className="banner" role="status">
-          Adding {pending.done + 1} of {pending.total}: {pending.name}
+          Adding {pending.done + 1} of {pending.total}
+          {pending.percent > 0 ? ` · ${pending.percent}%` : ""}: {pending.name}
         </p>
       ) : null}
       {notice ? (
@@ -239,7 +243,7 @@ export default function Shelf() {
 
       {continueBook && books.length > 0 ? (
         <Link href={`/read/${continueBook.id}`} className="continue" onMouseEnter={warmPdf} onFocus={warmPdf}>
-          <span>Continue</span>
+          <span>Where you left off</span>
           <strong>{continueBook.title}</strong>
           <em>
             {continueBook.lastPage > 1 ? `Page ${continueBook.lastPage}` : "Cover"} of {continueBook.pageCount}
@@ -269,7 +273,6 @@ export default function Shelf() {
                 <span className="book-title">{book.title}</span>
                 <span className="book-meta">
                   {book.pageCount} {book.pageCount === 1 ? "page" : "pages"}
-                  {book.storage === "visit" ? " · this visit" : ""}
                 </span>
                 {book.lastPage > 1 ? (
                   <span className="book-progress" aria-hidden="true">

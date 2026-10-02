@@ -28,6 +28,19 @@ export async function openPdf(data: Uint8Array): Promise<PDFDocumentProxy> {
   return task.promise;
 }
 
+export async function openPdfUrl(url: string): Promise<PDFDocumentProxy> {
+  const pdfjs = await loadPdfjs();
+  const task = pdfjs.getDocument({
+    url,
+    verbosity: pdfjs.VerbosityLevel.ERRORS,
+    maxImageSize: -1,
+    canvasMaxAreaInBytes: MAX_IMAGE_BYTES,
+    rangeChunkSize: 1024 * 1024,
+    disableAutoFetch: true,
+  });
+  return task.promise;
+}
+
 export async function renderCover(doc: PDFDocumentProxy): Promise<string> {
   const page = await doc.getPage(1);
   const base = page.getViewport({ scale: 1 });
