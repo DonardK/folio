@@ -357,11 +357,18 @@ button {
   color: var(--foreground);
 }
 
+.stage.is-zoomed {
+  overflow: hidden;
+  touch-action: none;
+  cursor: grab;
+}
+
 .sheet-row {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 16px;
+  transform-origin: center center;
 }
 
 .page-sheet {

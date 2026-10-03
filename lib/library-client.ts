@@ -49,6 +49,15 @@ export async function removeBook(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readError(response));
 }
 
+export async function saveCover(id: string, coverUrl: string): Promise<void> {
+  const response = await fetch(`/api/books/${id}/cover`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ coverUrl }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+}
+
 export async function saveReadingProgress(
   id: string,
   lastPage: number,

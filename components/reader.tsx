@@ -55,13 +55,22 @@ export default function Reader({ bookId }: { bookId: string }) {
   const [hint, setHint] = useState(() => !hasSeenHint());
   const [stage, setStage] = useState<StageSize>({ width: 0, height: 0 });
   const [seenBookId, setSeenBookId] = useState(bookId);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
 
   if (seenBookId !== bookId) {
     setSeenBookId(bookId);
     setLoad({ status: "loading", title: "Opening" });
     setScrub(null);
     setAnchor(1);
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   }
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
 
   useEffect(() => {
     warmPdf();
@@ -197,7 +206,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, []);
 
   const goNext = useCallback(() => {
-    if (!ready) return;
+    if (!ready || zoomRef.current > 1) return;
     const upcoming = nextAnchor(anchor, ready.doc.numPages, viewMode);
     if (upcoming != null) {
       setAnchor(upcoming);
@@ -212,7 +221,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, [anchor, dismissHint, nextBook, ready, router, viewMode]);
 
   const goPrevious = useCallback(() => {
-    if (!ready) return;
+    if (!ready || zoomRef.current > 1) return;
     const upcoming = previousAnchor(anchor, ready.doc.numPages, viewMode);
     if (upcoming != null) {
       setAnchor(upcoming);
@@ -260,7 +269,7 @@ export default function Reader({ bookId }: { bookId: string }) {
   }, []);
 
   function commitScrub(value: number) {
-    if (!ready) return;
+    if (!ready || zoomRef.current > 1) return;
     const page = pagesForAnchor(value, ready.doc.numPages, viewMode)[0] ?? value;
     setScrub(null);
     setAnchor(page);
@@ -276,16 +285,61 @@ export default function Reader({ bookId }: { bookId: string }) {
     setFit(next);
   }
 
+  function applyZoom(next: number) {
+    const clamped = Math.min(4, Math.max(1, Math.round(next * 100) / 100));
+    setZoom(clamped);
+    if (clamped <= 1) setPan({ x: 0, y: 0 });
+  }
+
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ distance: number; zoom: number } | null>(null);
   const gesture = useRef<{ x: number; y: number; id: number } | null>(null);
+
+  function pointerDistance() {
+    const points = [...pointers.current.values()];
+    if (points.length < 2) return 0;
+    const dx = points[0].x - points[1].x;
+    const dy = points[0].y - points[1].y;
+    return Math.hypot(dx, dy);
+  }
 
   function onPointerDown(event: React.PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
-    gesture.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (pointers.current.size === 2) {
+      pinch.current = { distance: pointerDistance(), zoom: zoomRef.current };
+      gesture.current = null;
+      return;
+    }
+    if (zoomRef.current <= 1) {
+      gesture.current = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    }
+  }
+
+  function onPointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    const previous = pointers.current.get(event.pointerId);
+    if (!previous) return;
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointers.current.size >= 2 && pinch.current && pinch.current.distance > 0) {
+      const distance = pointerDistance();
+      applyZoom(pinch.current.zoom * (distance / pinch.current.distance));
+      return;
+    }
+    if (zoomRef.current > 1) {
+      setPan((current) => ({
+        x: current.x + event.clientX - previous.x,
+        y: current.y + event.clientY - previous.y,
+      }));
+    }
   }
 
   function onPointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    pointers.current.delete(event.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
     const start = gesture.current;
     gesture.current = null;
+    if (zoomRef.current > 1) return;
     if (!start || start.id !== event.pointerId || !ready) return;
     const dx = event.clientX - start.x;
     const dy = event.clientY - start.y;
@@ -303,7 +357,7 @@ export default function Reader({ bookId }: { bookId: string }) {
     }
   }
 
-  const layouts = usePageLayout(ready?.doc ?? null, renderPages, stage, fit);
+  const layouts = usePageLayout(ready?.doc ?? null, renderPages, stage, fit, zoom);
   const atStart = renderPages[0] === 1;
   const atEnd = renderPages.length > 0 && renderPages[renderPages.length - 1] === pageCount;
   const label = spreadLabel(labelPages, pageCount);
@@ -312,10 +366,13 @@ export default function Reader({ bookId }: { bookId: string }) {
     <main className="reader">
       <div
         ref={stageRef}
-        className={`stage${fit === "width" ? " is-width" : ""}${hint ? " has-hint" : ""}`}
+        className={`stage${fit === "width" && zoom <= 1 ? " is-width" : ""}${hint ? " has-hint" : ""}${zoom > 1 ? " is-zoomed" : ""}`}
         onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={() => {
+        onPointerCancel={(event) => {
+          pointers.current.delete(event.pointerId);
+          if (pointers.current.size < 2) pinch.current = null;
           gesture.current = null;
         }}
       >
@@ -331,7 +388,10 @@ export default function Reader({ bookId }: { bookId: string }) {
           </div>
         ) : null}
         {ready && layouts ? (
-          <div className="sheet-row">
+          <div
+            className="sheet-row"
+            style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
+          >
             {layouts.map((layout) => (
               <PageCanvas
                 key={layout.page}
@@ -368,7 +428,7 @@ export default function Reader({ bookId }: { bookId: string }) {
             min={1}
             max={Math.max(pageCount, 1)}
             step={1}
-            disabled={!ready}
+            disabled={!ready || zoom > 1}
             value={Math.min(scrub ?? anchor, Math.max(pageCount, 1))}
             aria-valuetext={label}
             onInput={(event) => setScrub(Number(event.currentTarget.value))}
@@ -382,7 +442,7 @@ export default function Reader({ bookId }: { bookId: string }) {
             type="button"
             className="nav-button"
             onClick={goPrevious}
-            disabled={!ready || (atStart && !previousBook)}
+            disabled={!ready || zoom > 1 || (atStart && !previousBook)}
           >
             {atStart && previousBook ? "Previous book" : "Previous"}
           </button>
@@ -403,6 +463,19 @@ export default function Reader({ bookId }: { bookId: string }) {
               2 pages
             </button>
           </div>
+          <div className="segment" role="group" aria-label="Zoom">
+            <button
+              type="button"
+              aria-label="Zoom out"
+              onClick={() => applyZoom(zoom / 1.4)}
+              disabled={zoom <= 1}
+            >
+              −
+            </button>
+            <button type="button" aria-label="Zoom in" onClick={() => applyZoom(zoom * 1.4)} disabled={zoom >= 4}>
+              +
+            </button>
+          </div>
           <div className="segment" role="group" aria-label="Page fit">
             <button type="button" aria-pressed={fit === "page"} onClick={() => changeFit("page")}>
               Whole
@@ -415,7 +488,7 @@ export default function Reader({ bookId }: { bookId: string }) {
             type="button"
             className="nav-button"
             onClick={goNext}
-            disabled={!ready || (atEnd && !nextBook)}
+            disabled={!ready || zoom > 1 || (atEnd && !nextBook)}
           >
             {atEnd && nextBook ? "Next book" : "Next"}
           </button>
@@ -451,6 +524,7 @@ function usePageLayout(
   pages: number[],
   stage: StageSize,
   fit: FitMode,
+  zoom: number,
 ): PageLayout[] | null {
   const pageKey = pages.join(",");
   const [tick, setTick] = useState(0);
@@ -493,7 +567,8 @@ function usePageLayout(
   const maxHeight = boxes.reduce((max, box) => Math.max(max, box.height), 1);
   const scaleWidth = (innerWidth - gap) / sumWidth;
   const scaleHeight = innerHeight / maxHeight;
-  const scale = fit === "width" ? scaleWidth : Math.min(scaleWidth, scaleHeight);
+  const fitted = fit === "width" ? scaleWidth : Math.min(scaleWidth, scaleHeight);
+  const scale = fitted * zoom;
 
   return boxes.map((box) => ({
     page: box.page,

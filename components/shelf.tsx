@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import CoverArt from "@/components/cover-art";
+import { COVER_VERSION, type BookRecord } from "@/lib/book";
 import {
   createBook,
   fetchBooks,
@@ -10,7 +12,6 @@ import {
   titleFromFileName,
   uploadBookFile,
 } from "@/lib/library-client";
-import type { BookRecord } from "@/lib/book";
 import { openPdf, pdfErrorMessage, renderCover, warmPdf } from "@/lib/pdf";
 
 type Notice = { tone: "ok" | "warn"; text: string };
@@ -65,6 +66,14 @@ export default function Shelf() {
     const id = window.setTimeout(() => warmPdf(), 500);
     return () => window.clearTimeout(id);
   }, [books.length]);
+
+  const rememberCover = useCallback((id: string, coverUrl: string) => {
+    setBooks((current) =>
+      current.map((book) =>
+        book.id === id ? { ...book, coverUrl, coverVersion: COVER_VERSION } : book,
+      ),
+    );
+  }, []);
 
   async function addFiles(fileList: FileList | File[]) {
     const incoming = [...fileList];
@@ -262,13 +271,13 @@ export default function Shelf() {
                 onFocus={warmPdf}
               >
                 <span className="cover-frame">
-                  {book.coverUrl ? (
-                    // Local data URLs cannot be optimized by the image loader.
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={book.coverUrl} alt="" />
-                  ) : (
-                    <span className="cover-fallback">{book.title.slice(0, 1)}</span>
-                  )}
+                  <CoverArt
+                    bookId={book.id}
+                    title={book.title}
+                    coverUrl={book.coverUrl}
+                    coverVersion={book.coverVersion}
+                    onReady={rememberCover}
+                  />
                 </span>
                 <span className="book-title">{book.title}</span>
                 <span className="book-meta">

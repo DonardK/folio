@@ -1,6 +1,7 @@
 import { del, get, head, list, put } from "@vercel/blob";
 import {
   compareFileNames,
+  COVER_VERSION,
   isBookId,
   metaPathname,
   pdfPathname,
@@ -108,6 +109,7 @@ export async function saveStoredBook(input: NewBookInput): Promise<BookRecord> {
     lastOpenedAt: 0,
     lastPage: 1,
     pathname,
+    coverVersion: COVER_VERSION,
   };
   await put(metaPathname(input.id), JSON.stringify(book), {
     access: "private",
@@ -122,6 +124,19 @@ export async function saveStoredProgress(id: string, lastPage: number): Promise<
   if (!book) return null;
   const page = Math.min(book.pageCount, Math.max(1, Math.trunc(lastPage)));
   const next: BookRecord = { ...book, lastPage: page, lastOpenedAt: Date.now() };
+  await put(metaPathname(id), JSON.stringify(next), {
+    access: "private",
+    allowOverwrite: true,
+    contentType: "application/json",
+  });
+  return next;
+}
+
+export async function saveStoredCover(id: string, coverUrl: string): Promise<BookRecord | null> {
+  if (!coverUrl.startsWith("data:image/jpeg;base64,") || coverUrl.length > COVER_LIMIT) return null;
+  const book = await readMeta(id);
+  if (!book) return null;
+  const next: BookRecord = { ...book, coverUrl, coverVersion: COVER_VERSION };
   await put(metaPathname(id), JSON.stringify(next), {
     access: "private",
     allowOverwrite: true,
